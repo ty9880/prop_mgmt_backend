@@ -374,3 +374,180 @@ def create_expense_record(
         "vendor": expense.vendor,
         "description": expense.description
     }
+
+@app.get("/properties/{property_id}/income/total")
+def get_total_income(property_id: int, bq: bigquery.Client = Depends(get_bq_client)):
+    """
+    Returns the total income for a specific property.
+    """
+    query = f"""
+        SELECT COALESCE(SUM(amount), 0) AS total_income
+        FROM `{PROJECT_ID}.{DATASET}.income`
+        WHERE property_id = @property_id
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("property_id", "INT64", property_id)
+        ]
+    )
+
+    try:
+        result = list(bq.query(query, job_config=job_config).result())
+        total_income = result[0]["total_income"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
+    return {
+        "property_id": property_id,
+        "total_income": total_income
+    }
+
+@app.get("/properties/{property_id}/expenses/total")
+def get_total_expenses(property_id: int, bq: bigquery.Client = Depends(get_bq_client)):
+    """
+    Returns the total expenses for a specific property.
+    """
+    query = f"""
+        SELECT COALESCE(SUM(amount), 0) AS total_expenses
+        FROM `{PROJECT_ID}.{DATASET}.expenses`
+        WHERE property_id = @property_id
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("property_id", "INT64", property_id)
+        ]
+    )
+
+    try:
+        result = list(bq.query(query, job_config=job_config).result())
+        total_expenses = result[0]["total_expenses"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
+    return {
+        "property_id": property_id,
+        "total_expenses": total_expenses
+    }
+
+@app.get("/properties/{property_id}/profit")
+def get_property_profit(property_id: int, bq: bigquery.Client = Depends(get_bq_client)):
+    """
+    Returns the profit for a property (total income - total expenses).
+    """
+    query = f"""
+        SELECT
+            COALESCE(i.total_income, 0) - COALESCE(e.total_expenses, 0) AS profit
+        FROM
+            (SELECT SUM(amount) AS total_income
+             FROM `{PROJECT_ID}.{DATASET}.income`
+             WHERE property_id = @property_id) i,
+            (SELECT SUM(amount) AS total_expenses
+             FROM `{PROJECT_ID}.{DATASET}.expenses`
+             WHERE property_id = @property_id) e
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("property_id", "INT64", property_id)
+        ]
+    )
+
+    try:
+        result = list(bq.query(query, job_config=job_config).result())
+        profit = result[0]["profit"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
+    return {
+        "property_id": property_id,
+        "profit": profit
+    }
+
+class IncomeUpdate(BaseModel):
+    amount: float
+    date: date
+    description: str | None = None
+
+
+@app.put("/income/{income_id}")
+def update_income_record(
+    income_id: int,
+    income: IncomeUpdate,
+    bq: bigquery.Client = Depends(get_bq_client)
+):
+    """
+    Updates an existing income record.
+    """
+
+    # Check if record exists
+    check_query = f"""
+        SELECT income_id
+        FROM `{PROJECT_ID}.{DATASET}.income`
+        WHERE income_id = @income_id
+    """
+
+    check_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("income_id", "INT64", income_id)
+        ]
+    )
+
+    try:
+        existing = list(bq.query(check_query, job_config=check_config).result())
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Income record with ID {income_id} not found"
+        )
+
+    # Update query
+    update_query = f"""
+        UPDATE `{PROJECT_ID}.{DATASET}.income`
+        SET
+            amount = @amount,
+            date = @date,
+            description = @description
+        WHERE income_id = @income_id
+    """
+
+    update_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("amount", "FLOAT64", income.amount),
+            bigquery.ScalarQueryParameter("date", "DATE", income.date),
+            bigquery.ScalarQueryParameter("description", "STRING", income.description),
+            bigquery.ScalarQueryParameter("income_id", "INT64", income_id)
+        ]
+    )
+
+    try:
+        bq.query(update_query, job_config=update_config).result()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Update failed: {str(e)}"
+        )
+
+    return {
+        "message": "Income record updated successfully",
+        "income_id": income_id,
+        "amount": income.amount,
+        "date": income.date,
+        "description": income.description
+    }
